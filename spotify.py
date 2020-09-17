@@ -4,19 +4,11 @@ from datetime import datetime
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-import base64, json, logging
+import base64, copy, json, logging, os, time
 
 import gpodder
 from gpodder import feedcore, model
 
-
-logger = logging.getLogger( __name__ )
-
-
-# gPodder extension information.
-__title__ = 'Spotify Extension'
-__description__ = 'Check for new episodes in Spotify podcasts.'
-__authors__ = 'Sebastian Dorn'
 
 
 # Spotify application information.
@@ -38,34 +30,21 @@ SPOTIFY_MARKET = 'DE'
 SPOTIFY_API_ACCOUNT = 'https://accounts.spotify.com/api/token'
 SPOTIFY_API_V1 = 'https://api.spotify.com/v1'
 
-
-
-class SpotifyFeed( model.Feed ):
-
-
-	def __init__( self, url, cover_url, description, max_episodes, ie_result ):
-		""" """
-
-		self._url = url
-		self._cover_url = cover_url
-		self._description = description
-		self._max_episodes = max_episodes
-		# ie_result['entries'] = self._process_entries(ie_result.get('entries', []))
-		self._ie_result = ie_result
+# gPodder extension information.
+__title__ = 'Spotify Extension'
+__description__ = 'Check for new episodes in Spotify podcasts.'
+__authors__ = 'Sebastian Dorn'
 
 
 
-class gPodderExtension:
+logger = logging.getLogger( __name__ )
 
 
-	def __init__( self, container ):
-		"""
-		Parameters
-		----------
-		container : gpodder.extensions.ExtensionContainer
-		"""
 
-		self.container = container
+class SpotifyAPI():
+
+
+	def __init__( self ):
 		self.token = None
 		self.token_timestamp = None
 		self.token_expires_in = 3600
@@ -82,7 +61,7 @@ class gPodderExtension:
 
 		url = '%s/shows/%s' % ( SPOTIFY_API_V1, url_path )
 
-		logger.debug( 'API request to: %s' % url )
+		logger.debug( 'Sending API request.' )
 
 		request = Request(
 			url,
@@ -100,29 +79,20 @@ class gPodderExtension:
 		return json.loads( json_data )
 
 
-	def fetch_episodes( self, channel, max_episodes = 0 ):
-		"""
-		Called by model.gPodderFetcher to get a custom feed.
-
-		Returns
-		-------
-		gpodder.feedcore.Result
-		"""
-
-		feed = SpotifyFeed()
-		feedcore.Result( feedcore.UPDATED_FEED, feed )
-
-
 	def get_show_episodes( self, show_id ):
 		"""
 		Parameters
 		----------
 		show_id : str
+
+		Returns
+		-------
+		list of dicts
 		"""
 
 		url = '%s/episodes?market=%s' % ( show_id, SPOTIFY_MARKET )
 
-		return self.do_api_request( url )
+		return self.do_api_request( url )['items']
 
 
 	def get_show_info( self, show_id ):
@@ -130,6 +100,10 @@ class gPodderExtension:
 		Parameters
 		----------
 		show_id : str
+
+		Returns
+		-------
+		dict
 		"""
 
 		url_path = '%s?market=%s' % ( show_id, SPOTIFY_MARKET )
@@ -192,47 +166,292 @@ class gPodderExtension:
 		return True
 
 
+
+class SpotifyFeed( object ):
+
+
+	def __init__( self, show_id ):
+		"""
+		Parameters
+		----------
+		show_id : str
+		"""
+
+		self.show_id = show_id
+		self.cache_file = os.path.join( gpodder.home, 'spotify_cache' )
+
+		if os.path.exists( self.cache_file ):
+			try:
+				with open( self.cache_file, 'r' ) as f:
+					self.cache_info = json.load( f )
+			except:
+				self.cache_info = None
+		else:
+			self.cache_info = None
+
+
+	def cache_show( self, info ):
+		"""
+		Parameters
+		----------
+		info : dict
+		"""
+
+		if not self.cache_info:
+			self.cache_info = {}
+
+		# Copy the info dictionary and remove
+		# some big, but unnecessary attributes.
+		info_copy = copy.deepcopy( info )
+		info_copy.pop( 'available_markets', None )
+		info_copy.pop( 'episodes', None )
+
+		self.cache_info[self.show_id] = info_copy
+
+		self.save_cache_file()
+
+
+	def delete_show_from_cache( self ):
+		"""
+		Delete the show from the cache.
+		"""
+
+		if self.cache_info and self.cache_info[self.show_id]:
+			self.cache_info.pop( self.show_id, None )
+			self.save_cache_file()
+
+
+	def get_title( self ):
+		"""
+		Returns
+		-------
+		str
+		"""
+
+		if self.cache_info and self.cache_info[self.show_id]:
+			return self.cache_info[self.show_id]['name']
+
+		info = spotify_api.get_show_info( self.show_id )
+		self.cache_show( info )
+
+		return info['name']
+
+
+	def get_image( self ):
+		"""
+		Returns
+		-------
+		str
+		"""
+
+		if self.cache_info and self.cache_info[self.show_id]:
+			return self.cache_info[self.show_id]['images'][1]['url']
+
+		info = spotify_api.get_show_info( self.show_id )
+		self.cache_show( info )
+
+		return info['images'][1]['url']
+
+
+	def get_link( self ):
+		"""
+		Returns
+		-------
+		str
+		"""
+
+		return 'https://open.spotify.com/show/%s' % self.show_id
+
+
+	def get_description( self ):
+		"""
+		Returns
+		-------
+		str
+		"""
+
+		if self.cache_info and self.cache_info[self.show_id]:
+			return self.cache_info[self.show_id]['description']
+
+		info = spotify_api.get_show_info( self.show_id )
+		self.cache_show( info )
+
+		return info['description']
+
+
+	def get_new_episodes( self, channel, existing_guids ):
+		"""
+		Parameters
+		----------
+		channel        : gpodder.model.PodcastChannel
+		existing_guids : list of str
+
+		Returns
+		-------
+		list of dicts, list of str
+		"""
+
+		episodes = spotify_api.get_show_episodes( self.show_id )
+
+		new_episodes = []
+		seen_guids = []
+
+		for episode in episodes:
+			seen_guids.append( episode['id'] )
+
+			if episode['id'] not in existing_guids:
+				rd = episode['release_date'].split( '-' )
+				published = time.mktime( ( int( rd[0] ), int( rd[1] ), int( rd[2] ), 0, 0, 0, 0, 0, 0 ) )
+
+				new_episode = channel.episode_factory( {
+					'description': episode.get('description', ''),
+					'file_size': -1,
+					'guid': episode['id'],
+					'link': episode['external_urls']['spotify'],
+					'mime_type': 'text/html',
+					'published': published,
+					'title': episode['name'],
+					'total_time': episode.get('duration_ms', 0) / 1000,
+					'url': episode['external_urls']['spotify']
+				} )
+				new_episode.save()
+				new_episodes.append( new_episode )
+
+		return new_episodes, seen_guids
+
+
+	def save_cache_file( self ):
+		try:
+			with open( self.cache_file, 'w' ) as f:
+				json.dump( self.cache_info, f )
+		except Exception as exc:
+			logger.error( exc )
+
+
+	@classmethod
+	def handle_url( cls, url ):
+		"""
+		Parameters
+		----------
+		url : str
+		"""
+
+		show_id = cls.extract_show_id( url )
+
+		if isinstance( show_id, str ):
+			return cls( show_id )
+
+
+	@staticmethod
+	def extract_show_id( url ):
+		"""
+		Parameters
+		----------
+		url : str
+		"""
+
+		if not isinstance( url, str ):
+			return None
+
+		if not url.startswith( 'https://open.spotify.com/show/' ):
+			return None
+
+		show_id = url.replace( 'https://open.spotify.com/show/', '' )
+		show_id = show_id.replace( '/', '' )
+
+		if len( show_id ) < 1:
+			return None
+
+		return show_id
+
+
+
+class gPodderExtension:
+
+
+	def __init__( self, container ):
+		"""
+		Parameters
+		----------
+		container : gpodder.extensions.ExtensionContainer
+		"""
+
+		self.container = container
+
+
+	def on_episodes_context_menu( self, episodes ):
+		"""
+		Parameters
+		----------
+		episodes : list of gpodder.model.PodcastEpisode
+
+		Returns
+		-------
+		list of tupels
+		"""
+
+		def openInBrowser( episodes ):
+			for episode in episodes:
+				gpodder.util.open_website( episode.link )
+
+		return [(
+			'Open in web browser',
+			openInBrowser
+		)]
+
+
 	def on_load( self ):
 		""" Load extension. """
 
 		logger.debug( 'Loading Spotify extension.' )
-		registry.feed_handler.register( self.fetch_episodes )
+
+		model.register_custom_handler( SpotifyFeed )
+
+		# gPodder 3.10.18
+		# registry.feed_handler.register( self.fetch_episodes )
 
 
-	def on_podcast_save( self, podcast ):
+	def on_podcast_delete( self, channel ):
 		"""
 		Parameters
 		----------
-		podcast : gpodder.model.PodcastChannel
+		channel : gpodder.model.Model
 		"""
 
-		if not isinstance( podcast.url, str ):
-			return
+		# NOTE (gPodder 3.10.1):
+		# Theoretically that is how it should be done. But
+		# gPodder does not actually passes the channel,
+		# only a model without any channel information. We do
+		# not know, which podcast/channel has been removed.
 
-		if not podcast.url.startswith( 'https://open.spotify.com/show/' ):
-			return
+		# show_id = SpotifyFeed.extract_show_id( channel.url )
 
-		show_id = podcast.url.replace( 'https://open.spotify.com/show/', '' )
-		show_id = show_id.replace( '/', '' )
+		# if isinstance( show_id, str ):
+		# 	feed = SpotifyFeed( show_id )
+		# 	feed.delete_show_from_cache()
 
-		logger.debug( 'Show ID: %s' % show_id )
 
-		info = self.get_show_info( show_id )
-		podcast.link = podcast.url
-		podcast.title = info['name']
-		podcast.description = info['description']
-		podcast.sync_to_mp3_player = False
-		podcast.cover_url = info['images'][1]['url']
+	def on_podcast_save( self, channel ):
+		"""
+		Parameters
+		----------
+		channel : gpodder.model.PodcastChannel
+		"""
+
+		channel.sync_to_mp3_player = False
 
 
 	def on_unload( self ):
 		""" Unload extension. """
 
 		logger.debug( 'Unloading Spotify extension.' )
-		self.token = None
 
-		try:
-			registry.feed_handler.unregister( self.fetch_episodes )
-		except ValueError:
-			pass
+		# gPodder 3.10.18
+		# try:
+		# 	registry.feed_handler.unregister( self.fetch_episodes )
+		# except ValueError:
+		# 	pass
 
+
+
+spotify_api = SpotifyAPI()
