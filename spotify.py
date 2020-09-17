@@ -34,6 +34,8 @@ SPOTIFY_API_V1 = 'https://api.spotify.com/v1'
 __title__ = 'Spotify Extension'
 __description__ = 'Check for new episodes in Spotify podcasts.'
 __authors__ = 'Sebastian Dorn'
+__doc__ = 'https://github.com/sebadorn/gpodder-spotify-extension'
+__version__ = '1.0.0'
 
 
 
