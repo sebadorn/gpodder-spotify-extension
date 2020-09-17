@@ -20,23 +20,3 @@ The goal is to be able to add podcasts on Spotify to gPodder. Downloading the ep
 
 1. Remove the file `spotify.py` from `$HOME/gPodder/Extensions/`.
 2. Remove the file `spotify_cache` from `$HOME/gPodder/`.
-
-
-## curl example
-
-```bash
-$ curl --basic -u <CLIENT_ID>:<CLIENT_SECRET> \
-	--request POST \
-	-d grant_type=client_credentials \
-	https://accounts.spotify.com/api/token
-{"access_token":"<TOKEN>","token_type":"Bearer","expires_in":3600,"scope":""}
-```
-
-`<CLIENT_ID>` and `<CLIENT_SECRET>` have to be replaced with the values for your application.
-
-```bash
-$ curl -X "GET" "https://api.spotify.com/v1/shows/<SHOW_ID>/episodes?market=DE" \
-	-H "Accept: application/json" \
-	-H "Content-Type: application/json" \
-	-H "Authorization: Bearer <TOKEN>"
-```
