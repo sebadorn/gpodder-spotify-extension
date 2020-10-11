@@ -5,6 +5,7 @@ The goal is to be able to add podcasts on Spotify to gPodder. Downloading the ep
 
 ## Tested with
 
+* gPodder 3.10.16 on Ubuntu 18.04
 * gPodder 3.10.1 on Ubuntu 18.04
 
 

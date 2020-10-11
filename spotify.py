@@ -4,7 +4,7 @@ from datetime import datetime
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-import base64, copy, json, logging, os, time
+import base64, copy, importlib, json, logging, os, time
 
 import gpodder
 from gpodder import feedcore, model
@@ -43,7 +43,7 @@ logger = logging.getLogger( __name__ )
 
 
 
-class SpotifyAPI():
+class SpotifyAPI:
 
 
 	def __init__( self ):
@@ -223,7 +223,17 @@ class SpotifyFeed( object ):
 			self.save_cache_file()
 
 
-	def get_title( self ):
+	def get_cover_url( self ):
+		"""
+		Returns
+		-------
+		str
+		"""
+
+		return self.get_image()
+
+
+	def get_description( self ):
 		"""
 		Returns
 		-------
@@ -231,12 +241,22 @@ class SpotifyFeed( object ):
 		"""
 
 		if self.cache_info and self.cache_info[self.show_id]:
-			return self.cache_info[self.show_id]['name']
+			return self.cache_info[self.show_id]['description']
 
 		info = spotify_api.get_show_info( self.show_id )
 		self.cache_show( info )
 
-		return info['name']
+		return info['description']
+
+
+	def get_http_etag( self ):
+		""" """
+		return None
+
+
+	def get_http_last_modified(self):
+		""" """
+		return None
 
 
 	def get_image( self ):
@@ -265,7 +285,17 @@ class SpotifyFeed( object ):
 		return 'https://open.spotify.com/show/%s' % self.show_id
 
 
-	def get_description( self ):
+	def get_next_page( self, channel, max_episodes ):
+		""" """
+		return None
+
+
+	def get_payment_url( self ):
+		""" """
+		return None
+
+
+	def get_title( self ):
 		"""
 		Returns
 		-------
@@ -273,12 +303,12 @@ class SpotifyFeed( object ):
 		"""
 
 		if self.cache_info and self.cache_info[self.show_id]:
-			return self.cache_info[self.show_id]['description']
+			return self.cache_info[self.show_id]['name']
 
 		info = spotify_api.get_show_info( self.show_id )
 		self.cache_show( info )
 
-		return info['description']
+		return info['name']
 
 
 	def get_new_episodes( self, channel, existing_guids ):
@@ -328,6 +358,20 @@ class SpotifyFeed( object ):
 				json.dump( self.cache_info, f )
 		except Exception as exc:
 			logger.error( exc )
+
+
+	@classmethod
+	def fetch_episodes( cls, channel, max_episodes = 0 ):
+		"""
+		Used in gPodder 3.10.16 but not 3.10.1.
+
+		Parameters
+		----------
+		channel      : gpodder.model.PodcastChannel
+		max_episodes : int
+		"""
+
+		return feedcore.Result( feedcore.UPDATED_FEED, cls.handle_url( channel.url ) )
 
 
 	@classmethod
@@ -407,30 +451,38 @@ class gPodderExtension:
 
 		logger.debug( 'Loading Spotify extension.' )
 
-		model.register_custom_handler( SpotifyFeed )
-
-		# gPodder 3.10.18
-		# registry.feed_handler.register( self.fetch_episodes )
+		try:
+			# gPodder 3.10.16
+			registry = importlib.import_module( 'gpodder.registry' )
+			registry.feed_handler.register( SpotifyFeed.fetch_episodes )
+		except ModuleNotFoundError:
+			# gPodder 3.10.1
+			logger.debug( 'gpodder.registry module not found. Using fallback to "register_custom_handler".' )
+			model.register_custom_handler( SpotifyFeed )
 
 
 	def on_podcast_delete( self, channel ):
 		"""
 		Parameters
 		----------
-		channel : gpodder.model.Model
+		channel : gpodder.model.Model (3.10.1) or
+				  gpodder.model.PodcastChannel (3.10.16)
 		"""
 
 		# NOTE (gPodder 3.10.1):
 		# Theoretically that is how it should be done. But
 		# gPodder does not actually passes the channel,
 		# only a model without any channel information. We do
-		# not know, which podcast/channel has been removed.
+		# not know which podcast/channel has been removed.
 
-		# show_id = SpotifyFeed.extract_show_id( channel.url )
+		if not isinstance( channel, gpodder.model.PodcastChannel ):
+			return
 
-		# if isinstance( show_id, str ):
-		# 	feed = SpotifyFeed( show_id )
-		# 	feed.delete_show_from_cache()
+		show_id = SpotifyFeed.extract_show_id( channel.url )
+
+		if isinstance( show_id, str ):
+			feed = SpotifyFeed( show_id )
+			feed.delete_show_from_cache()
 
 
 	def on_podcast_save( self, channel ):
@@ -448,11 +500,12 @@ class gPodderExtension:
 
 		logger.debug( 'Unloading Spotify extension.' )
 
-		# gPodder 3.10.18
-		# try:
-		# 	registry.feed_handler.unregister( self.fetch_episodes )
-		# except ValueError:
-		# 	pass
+		try:
+			# gPodder 3.10.16
+			registry = importlib.import_module( 'gpodder.registry' )
+			registry.feed_handler.unregister( SpotifyFeed.fetch_episodes )
+		except ModuleNotFoundError:
+			logger.debug( 'gpodder.registry module not found.' )
 
 
 
