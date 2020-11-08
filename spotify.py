@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from datetime import datetime
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 import base64, copy, importlib, json, logging, os, time
@@ -9,26 +9,24 @@ import base64, copy, importlib, json, logging, os, time
 import gpodder
 from gpodder import feedcore, model
 
+from gi.repository import Gtk, WebKit2
+
 
 
 # Spotify application information.
-# You will have to create an application on:
+# An application can be created here for a client ID:
 # https://developer.spotify.com/dashboard/applications
-#
-# Then copy the displayed Client ID and Client Secret.
-# Do not share those and make sure not to commit them
-# to your version control system.
 SPOTIFY_CLIENT_ID = ''
-SPOTIFY_CLIENT_SECRET = ''
-
-# The market is listed as optional in the API, but that
-# is wrong. Without this the request will return 404,
-# at least using Client Credentials. With OAuth the market
-# parameter seems to be optionally.
-SPOTIFY_MARKET = 'DE'
 
 SPOTIFY_API_ACCOUNT = 'https://accounts.spotify.com/api/token'
 SPOTIFY_API_V1 = 'https://api.spotify.com/v1'
+
+SPOTIFY_REDIRECT_URI = 'gpodder://spotify-extension/callback/'
+
+SPOTIFY_OAUTH = 'https://accounts.spotify.com/authorize'
+SPOTIFY_OAUTH += '?response_type=code'
+SPOTIFY_OAUTH += '&client_id=' + SPOTIFY_CLIENT_ID
+SPOTIFY_OAUTH += '&redirect_uri=' + quote( SPOTIFY_REDIRECT_URI, safe = '~()*!.\'' )
 
 # gPodder extension information.
 __title__ = 'Spotify Extension'
@@ -169,17 +167,48 @@ class SpotifyAPI:
 
 
 
-class SpotifyFeed( object ):
+class SpotifyCacheHandler:
 
 
-	def __init__( self, show_id ):
+	def delete_podcast_info( self, show_id ):
 		"""
 		Parameters
 		----------
 		show_id : str
 		"""
 
-		self.show_id = show_id
+		if self.cache_info['podcasts'][show_id]:
+			self.cache_info['podcasts'].pop( show_id, None )
+			self.save_cache_file()
+
+
+	def get_podcast( self, show_id ):
+		"""
+		Parameters
+		----------
+		show_id : str
+
+		Returns
+		-------
+		dict or None
+		"""
+
+		return self.cache_info['podcasts'][show_id]
+
+
+	def get_user( self ):
+		"""
+		Returns
+		-------
+		dict or None
+		"""
+
+		return self.cache_info['user']
+
+
+	def load( self ):
+		""" """
+
 		self.cache_file = os.path.join( gpodder.home, 'spotify_cache' )
 
 		if os.path.exists( self.cache_file ):
@@ -191,16 +220,33 @@ class SpotifyFeed( object ):
 		else:
 			self.cache_info = None
 
+		if not self.cache_info:
+			self.cache_info = {}
 
-	def cache_show( self, info ):
+		if not self.cache_info['podcasts']:
+			self.cache_info['podcasts'] = {}
+
+		if not self.cache_info['user']:
+			self.cache_info['user'] = {}
+
+
+	def save_cache_file( self ):
+		""" """
+
+		try:
+			with open( self.cache_file, 'w' ) as f:
+				json.dump( self.cache_info, f )
+		except Exception as exc:
+			logger.error( exc )
+
+
+	def set_podcast_info( self, show_id, info ):
 		"""
 		Parameters
 		----------
-		info : dict
+		show_id : str
+		info    : dict
 		"""
-
-		if not self.cache_info:
-			self.cache_info = {}
 
 		# Copy the info dictionary and remove
 		# some big, but unnecessary attributes.
@@ -208,19 +254,22 @@ class SpotifyFeed( object ):
 		info_copy.pop( 'available_markets', None )
 		info_copy.pop( 'episodes', None )
 
-		self.cache_info[self.show_id] = info_copy
-
+		self.cache_info['podcasts'][show_id] = info_copy
 		self.save_cache_file()
 
 
-	def delete_show_from_cache( self ):
+
+class SpotifyFeed( object ):
+
+
+	def __init__( self, show_id ):
 		"""
-		Delete the show from the cache.
+		Parameters
+		----------
+		show_id : str
 		"""
 
-		if self.cache_info and self.cache_info[self.show_id]:
-			self.cache_info.pop( self.show_id, None )
-			self.save_cache_file()
+		self.show_id = show_id
 
 
 	def get_cover_url( self ):
@@ -240,11 +289,13 @@ class SpotifyFeed( object ):
 		str
 		"""
 
-		if self.cache_info and self.cache_info[self.show_id]:
-			return self.cache_info[self.show_id]['description']
+		info = spotify_cache.get_podcast( self.show_id )
+
+		if info:
+			return info['description']
 
 		info = spotify_api.get_show_info( self.show_id )
-		self.cache_show( info )
+		spotify_cache.set_podcast_info( self.show_id, info )
 
 		return info['description']
 
@@ -266,11 +317,13 @@ class SpotifyFeed( object ):
 		str
 		"""
 
-		if self.cache_info and self.cache_info[self.show_id]:
-			return self.cache_info[self.show_id]['images'][1]['url']
+		info = spotify_cache.get_podcast( self.show_id )
+
+		if info:
+			return info['images'][1]['url']
 
 		info = spotify_api.get_show_info( self.show_id )
-		self.cache_show( info )
+		spotify_cache.set_podcast_info( self.show_id, info )
 
 		return info['images'][1]['url']
 
@@ -302,11 +355,13 @@ class SpotifyFeed( object ):
 		str
 		"""
 
-		if self.cache_info and self.cache_info[self.show_id]:
-			return self.cache_info[self.show_id]['name']
+		info = spotify_cache.get_podcast( self.show_id )
+
+		if info:
+			return info['name']
 
 		info = spotify_api.get_show_info( self.show_id )
-		self.cache_show( info )
+		spotify_cache.set_podcast_info( self.show_id, info )
 
 		return info['name']
 
@@ -350,14 +405,6 @@ class SpotifyFeed( object ):
 				new_episodes.append( new_episode )
 
 		return new_episodes, seen_guids
-
-
-	def save_cache_file( self ):
-		try:
-			with open( self.cache_file, 'w' ) as f:
-				json.dump( self.cache_info, f )
-		except Exception as exc:
-			logger.error( exc )
 
 
 	@classmethod
@@ -425,6 +472,65 @@ class gPodderExtension:
 		self.container = container
 
 
+	def _open_settings( self ):
+		""" """
+
+		settings = WebKit2.Settings()
+		settings.set_enable_java( False )
+		settings.set_enable_plugins( False )
+		settings.set_enable_javascript( True )
+
+		webview_oauth = WebKit2.WebView.new_with_settings( settings )
+		webview_oauth.set_property( 'expand', True )
+		webview_oauth.connect( 'load-changed', self._webview_oauth_changed )
+		webview_oauth.load_uri( SPOTIFY_OAUTH )
+
+		btn_save = Gtk.Button.new_with_label( 'Save' )
+
+		vbox = Gtk.Box(
+			orientation = Gtk.Orientation.VERTICAL,
+			spacing = 6
+		)
+		vbox.pack_start( webview_oauth, True, True, 0 )
+		vbox.pack_start( btn_save, False, False, 0 )
+
+		win = Gtk.Window( title = 'Extension: Spotify' )
+		win.set_border_width( 10 )
+		win.add( vbox )
+
+		win.show_all()
+
+
+	def _webview_oauth_changed( self, webview, load_event ):
+		"""
+		Parameters
+		----------
+		webview    : gi.repository.WebKit2.WebView
+		load_event : gi.repository.WebKit2.LoadEvent
+		"""
+
+		if load_event is WebKit2.LoadEvent.REDIRECTED:
+			uri = webview.get_uri()
+
+			if uri.startswith( SPOTIFY_REDIRECT_URI ):
+				uri_dict = urlparse( uri )
+				query = parse_qs( uri_dict.query )
+
+				# TODO:
+				logger.debug( 'OAuth refresh token: ' + query['code'][0] )
+
+
+	def on_create_menu( self ):
+		""" """
+
+		menu_item = (
+			'Spotify: Settings',
+			self._open_settings
+		)
+
+		return [menu_item]
+
+
 	def on_episodes_context_menu( self, episodes ):
 		"""
 		Parameters
@@ -450,6 +556,8 @@ class gPodderExtension:
 		""" Load extension. """
 
 		logger.debug( 'Loading Spotify extension.' )
+
+		spotify_cache.load()
 
 		try:
 			# gPodder 3.10.16
@@ -482,7 +590,7 @@ class gPodderExtension:
 
 		if isinstance( show_id, str ):
 			feed = SpotifyFeed( show_id )
-			feed.delete_show_from_cache()
+			spotify_cache.delete_podcast_info( show_id )
 
 
 	def on_podcast_save( self, channel ):
@@ -509,4 +617,5 @@ class gPodderExtension:
 
 
 
+spotify_cache = SpotifyCacheHandler()
 spotify_api = SpotifyAPI()
