@@ -11,7 +11,6 @@ import importlib
 import json
 import logging
 import os
-import random
 import secrets
 import time
 
@@ -43,7 +42,7 @@ __title__ = 'Spotify Extension'
 __description__ = 'Check for new episodes in Spotify podcasts.'
 __authors__ = 'Sebastian Dorn'
 __doc__ = 'https://github.com/sebadorn/gpodder-spotify-extension'
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 
 
 
@@ -59,6 +58,10 @@ class SpotifyAPI:
 		Parameters
 		----------
 		url_path : str
+
+		Returns
+		-------
+		dict
 		"""
 
 		token = self.get_token()
@@ -84,7 +87,19 @@ class SpotifyAPI:
 		charset = resource.headers.get_content_charset()
 		json_data = resource.read().decode( charset )
 
-		return json.loads( json_data )
+		response_dict = json.loads( json_data )
+		response_dict['_headers'] = {}
+
+		etag = resource.headers.get( 'etag' )
+		last_modified = resource.headers.get( 'last-modified' )
+
+		if etag:
+			response_dict['_headers']['etag'] = etag
+
+		if last_modified:
+			response_dict['_headers']['last_modified'] = last_modified
+
+		return response_dict
 
 
 	def get_show_episodes( self, show_id ):
@@ -98,7 +113,8 @@ class SpotifyAPI:
 		list of dicts
 		"""
 
-		url = '%s/episodes?market=%s' % ( show_id, SPOTIFY_MARKET )
+		# 50 episodes at once is currently the maximum.
+		url = '%s/episodes?limit=50' % show_id
 
 		return self.do_api_request( url )['items']
 
@@ -111,12 +127,10 @@ class SpotifyAPI:
 
 		Returns
 		-------
-		dict
+		dict, dict
 		"""
 
-		url_path = '%s?market=%s' % ( show_id, SPOTIFY_MARKET )
-
-		return self.do_api_request( url_path )
+		return self.do_api_request( show_id )
 
 
 	def get_token( self ):
@@ -143,10 +157,12 @@ class SpotifyAPI:
 			SPOTIFY_API_ACCOUNT,
 			data = post_data.encode(),
 			headers = {
+				'Accept': 'application/json',
 				'Content-Type': 'application/x-www-form-urlencoded'
 			},
 			method = 'POST'
 		)
+
 		json_response = urlopen( request ).read().decode()
 		dict_response = json.loads( json_response )
 
@@ -211,9 +227,12 @@ class SpotifyAPI:
 		str
 		"""
 
-		verifier_sha256 = hashlib.sha256( verifier )
+		verifier_sha256 = hashlib.sha256( verifier.encode( 'utf-8' ) ).digest()
 
-		return base64.b64encode( verifier_sha256.digest() ).decode( 'utf-8' )
+		code_challenge = base64.urlsafe_b64encode( verifier_sha256 ).decode( 'utf-8' )
+		code_challenge = code_challenge.replace( '=', '' )
+
+		return code_challenge
 
 
 	@staticmethod
@@ -230,8 +249,7 @@ class SpotifyAPI:
 		if SpotifyAPI._verifier:
 			return SpotifyAPI._verifier
 
-		verifier_length = random.randint( 43, 128 )
-		verifier = secrets.token_urlsafe( verifier_length ).encode( 'utf-8' )
+		verifier = secrets.token_urlsafe( nbytes = 64 )
 
 		SpotifyAPI._verifier = verifier
 
@@ -252,8 +270,7 @@ class SpotifyAPI:
 		if SpotifyAPI._oauth_state:
 			return SpotifyAPI._oauth_state
 
-		length = random.randint( 8, 16 )
-		SpotifyAPI._oauth_state = secrets.token_urlsafe( length )
+		SpotifyAPI._oauth_state = secrets.token_urlsafe( nbytes = 16 )
 
 		return SpotifyAPI._oauth_state
 
@@ -266,21 +283,30 @@ class SpotifyAPI:
 		authorization_code : str
 		"""
 
+		logger.debug( 'Requesting access token.' )
+
 		post_data = urlencode( {
 			'client_id': SPOTIFY_CLIENT_ID,
 			'grant_type': 'authorization_code',
 			'code': authorization_code,
 			'code_verifier': SpotifyAPI.generate_code_verifier(),
-			'redirect_uri': SpotifyAPI.build_oauth_url()
+			'redirect_uri': SPOTIFY_REDIRECT_URI
 		} )
 
 		request = Request(
 			SPOTIFY_API_ACCOUNT,
 			data = post_data.encode(),
+			headers = {
+				'Accept': 'application/json',
+				'Content-Type': 'application/x-www-form-urlencoded'
+			},
 			method = 'POST'
 		)
+
 		json_response = urlopen( request ).read().decode()
 		dict_response = json.loads( json_response )
+
+		logger.debug( 'Received access token.' )
 
 		spotify_cache.set_user_info( dict_response )
 
@@ -311,7 +337,7 @@ class SpotifyCacheHandler:
 		show_id : str
 		"""
 
-		if self.cache_info['podcasts'][show_id]:
+		if show_id in self.cache_info['podcasts']:
 			self.cache_info['podcasts'].pop( show_id, None )
 			self.save_cache_file()
 
@@ -327,7 +353,10 @@ class SpotifyCacheHandler:
 		dict or None
 		"""
 
-		return self.cache_info['podcasts'][show_id]
+		if show_id in self.cache_info['podcasts']:
+			return self.cache_info['podcasts'][show_id]
+
+		return None
 
 
 	def get_user( self ):
@@ -357,10 +386,10 @@ class SpotifyCacheHandler:
 		if not self.cache_info:
 			self.cache_info = {}
 
-		if not self.cache_info['podcasts']:
+		if 'podcasts' not in self.cache_info:
 			self.cache_info['podcasts'] = {}
 
-		if not self.cache_info['user']:
+		if 'user' not in self.cache_info:
 			self.cache_info['user'] = {}
 
 
@@ -399,17 +428,17 @@ class SpotifyCacheHandler:
 		info : dict
 		"""
 
-		if info['access_token']:
+		if 'access_token' in info:
 			self.cache_info['user']['access_token'] = info['access_token']
 
-		if info['refresh_token']:
+		if 'refresh_token' in info:
 			self.cache_info['user']['refresh_token'] = info['refresh_token']
 
-		if info['scope']:
+		if 'scope' in info:
 			self.cache_info['user']['refresh_token'] = info['scope']
 
 		# Time period in seconds the token is valid for.
-		if info['expires_in']:
+		if 'expires_in' in info:
 			now_seconds = int( time.time() )
 			self.cache_info['user']['expires_at'] = now_seconds + int( info['expires_in'] )
 
@@ -459,12 +488,34 @@ class SpotifyFeed( object ):
 
 
 	def get_http_etag( self ):
-		""" """
+		"""
+		Returns
+		-------
+		str or None
+		"""
+
+		info = spotify_cache.get_podcast( self.show_id )
+
+		if info and '_headers' in info:
+			if 'etag' in info['_headers']:
+				return info['_headers']['etag']
+
 		return None
 
 
-	def get_http_last_modified(self):
-		""" """
+	def get_http_last_modified( self ):
+		"""
+		Returns
+		-------
+		str or None
+		"""
+
+		info = spotify_cache.get_podcast( self.show_id )
+
+		if info and '_headers' in info:
+			if 'last_modified' in info['_headers']:
+				return info['_headers']['last_modified']
+
 		return None
 
 
@@ -498,11 +549,13 @@ class SpotifyFeed( object ):
 
 	def get_next_page( self, channel, max_episodes ):
 		""" """
+
 		return None
 
 
 	def get_payment_url( self ):
 		""" """
+
 		return None
 
 
@@ -630,6 +683,46 @@ class gPodderExtension:
 		self.container = container
 
 
+	def _handle_oauth_redirect( self, uri ):
+		"""
+		Parameters
+		----------
+		uri : str
+		"""
+
+		uri_dict = urlparse( uri )
+		query = parse_qs( uri_dict.query )
+
+		is_valid = True
+
+		if 'state' in query:
+			state = query['state'][0]
+
+			if state != SpotifyAPI.generate_state():
+				logger.error( 'State in response does not match send state. OAuth failed.' )
+				is_valid = False
+		else:
+			logger.error( 'State missing in response. OAuth failed.' )
+			is_valid = False
+
+		if 'error' in query:
+			error = query['error'][0]
+			logger.error( 'Failed to authorize. Error response: %s' % error )
+			is_valid = False
+
+		if not is_valid:
+			return
+
+		if 'code' in query:
+			authorization_code = query['code'][0]
+			logger.debug( 'Received authorization code.' )
+
+		if authorization_code:
+			SpotifyAPI.request_access_token( authorization_code )
+		else:
+			logger.error( 'No authorization code received in response.' )
+
+
 	def _open_settings( self ):
 		""" """
 
@@ -643,14 +736,11 @@ class gPodderExtension:
 		webview_oauth.connect( 'load-changed', self._webview_oauth_changed )
 		webview_oauth.load_uri( SpotifyAPI.build_oauth_url() )
 
-		btn_save = Gtk.Button.new_with_label( 'Save' )
-
 		vbox = Gtk.Box(
 			orientation = Gtk.Orientation.VERTICAL,
 			spacing = 6
 		)
 		vbox.pack_start( webview_oauth, True, True, 0 )
-		vbox.pack_start( btn_save, False, False, 0 )
 
 		win = Gtk.Window( title = 'Extension: Spotify' )
 		win.set_border_width( 10 )
@@ -671,37 +761,7 @@ class gPodderExtension:
 			uri = webview.get_uri()
 
 			if uri.startswith( SPOTIFY_REDIRECT_URI ):
-				uri_dict = urlparse( uri )
-				query = parse_qs( uri_dict.query )
-
-				is_valid = True
-
-				if 'state' in query:
-					state = query['state'][0]
-
-					if state != SpotifyAPI.generate_state():
-						logger.error( 'State in response does not match send state. OAuth failed.' )
-						is_valid = False
-				else:
-					logger.error( 'State missing in response. OAuth failed.' )
-					is_valid = False
-
-				if 'error' in query:
-					error = query['error'][0]
-					logger.error( 'Failed to authorize. Error response: %s' % error )
-					is_valid = False
-
-				if not is_valid:
-					return
-
-				if 'code' in query:
-					authorization_code = query['code'][0]
-					logger.debug( 'Received authorization code.' )
-
-				if authorization_code:
-					SpotifyAPI.request_access_token( authorization_code )
-				else:
-					logger.error( 'No authorization code received in response.' )
+				self._handle_oauth_redirect( uri )
 
 
 	def on_create_menu( self ):

@@ -21,3 +21,11 @@ The goal is to be able to add podcasts on Spotify to gPodder. Downloading the ep
 
 1. Remove the file `spotify.py` from `$HOME/gPodder/Extensions/`.
 2. Remove the file `spotify_cache` from `$HOME/gPodder/`.
+
+
+## TODO
+
+* Load *all* episodes of a show, not just the last 50
+	* The show info response contains the total number of episodes as "total"
+* Login window: Set width and height
+* Login window: Close after success, show message
