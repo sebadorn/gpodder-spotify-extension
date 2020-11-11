@@ -102,11 +102,12 @@ class SpotifyAPI:
 		return response_dict
 
 
-	def get_show_episodes( self, show_id ):
+	def get_show_episodes( self, show_id, max_episodes = 0 ):
 		"""
 		Parameters
 		----------
-		show_id : str
+		show_id      : str
+		max_episodes : int
 
 		Returns
 		-------
@@ -114,7 +115,14 @@ class SpotifyAPI:
 		"""
 
 		# 50 episodes at once is currently the maximum.
-		url = '%s/episodes?limit=50' % show_id
+		LIMIT_MAX = 50
+
+		if max_episodes == 0:
+			max_episodes = LIMIT_MAX
+		else:
+			max_episodes = max( 1, min( LIMIT_MAX, max_episodes ) )
+
+		url = '%s/episodes?limit=%d' % ( show_id, max_episodes )
 
 		return self.do_api_request( url )['items']
 
@@ -139,13 +147,15 @@ class SpotifyAPI:
 
 		Returns
 		-------
-		str
+		str or None
 		"""
 
 		user = spotify_cache.get_user()
 
-		if not SpotifyAPI.is_token_expired( user ):
+		if not SpotifyAPI.is_token_expired( user ) and 'access_token' in user:
 			return user['access_token'];
+
+		logger.debug( 'Refreshing access token...' )
 
 		post_data = urlencode( {
 			'grant_type': 'refresh_token',
@@ -165,6 +175,10 @@ class SpotifyAPI:
 
 		json_response = urlopen( request ).read().decode()
 		dict_response = json.loads( json_response )
+
+		if 'access_token' not in dict_response:
+			logger.error( 'Server response did not contain an access token.' )
+			return None
 
 		spotify_cache.set_user_info( dict_response )
 
@@ -186,6 +200,9 @@ class SpotifyAPI:
 		-------
 		bool
 		"""
+
+		if 'expires_at' not in user:
+			return True
 
 		now_seconds = int( time.time() )
 		is_expired = now_seconds >= int( user['expires_at'] )
@@ -435,7 +452,7 @@ class SpotifyCacheHandler:
 			self.cache_info['user']['refresh_token'] = info['refresh_token']
 
 		if 'scope' in info:
-			self.cache_info['user']['refresh_token'] = info['scope']
+			self.cache_info['user']['scope'] = info['scope']
 
 		# Time period in seconds the token is valid for.
 		if 'expires_in' in info:
@@ -449,14 +466,16 @@ class SpotifyCacheHandler:
 class SpotifyFeed( object ):
 
 
-	def __init__( self, show_id ):
+	def __init__( self, show_id, max_episodes = 0 ):
 		"""
 		Parameters
 		----------
-		show_id : str
+		show_id      : str
+		max_episodes : int
 		"""
 
 		self.show_id = show_id
+		self.max_episodes = int( max_episodes )
 
 
 	def get_cover_url( self ):
@@ -589,7 +608,7 @@ class SpotifyFeed( object ):
 		list of dicts, list of str
 		"""
 
-		episodes = spotify_api.get_show_episodes( self.show_id )
+		episodes = spotify_api.get_show_episodes( self.show_id, self.max_episodes )
 
 		new_episodes = []
 		seen_guids = []
@@ -629,21 +648,22 @@ class SpotifyFeed( object ):
 		max_episodes : int
 		"""
 
-		return feedcore.Result( feedcore.UPDATED_FEED, cls.handle_url( channel.url ) )
+		return feedcore.Result( feedcore.UPDATED_FEED, cls.handle_url( channel.url, max_episodes ) )
 
 
 	@classmethod
-	def handle_url( cls, url ):
+	def handle_url( cls, url, max_episodes = 0 ):
 		"""
 		Parameters
 		----------
-		url : str
+		url          : str
+		max_episodes : int
 		"""
 
 		show_id = cls.extract_show_id( url )
 
 		if isinstance( show_id, str ):
-			return cls( show_id )
+			return cls( show_id, max_episodes )
 
 
 	@staticmethod
