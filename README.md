@@ -27,7 +27,6 @@ The goal is to be able to add podcasts on Spotify to gPodder. Downloading the ep
 
 * Load *all* episodes of a show, not just the last 50
 	* The show info response contains the total number of episodes as "total"
-* Login window: Set width and height
 * Login window: Close after success, show message
 * "gtk-open" in context menu should not mark an episode as played (remove entry altogether?)
 * Test again with gPodder 3.10.16

@@ -764,6 +764,7 @@ class gPodderExtension:
 
 		win = Gtk.Window( title = 'Extension: Spotify' )
 		win.set_border_width( 10 )
+		win.resize( 400, 700 )
 		win.add( vbox )
 
 		win.show_all()
